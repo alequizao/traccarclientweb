@@ -18,8 +18,8 @@ import { Toaster } from "@/components/ui/toaster"; // Import Toaster
 // });
 
 export const metadata: Metadata = {
-  title: 'Traccar Web Client',
-  description: 'Web client for Traccar GPS tracking',
+  title: 'Cliente Web Traccar',
+  description: 'Cliente web para rastreamento GPS Traccar',
 };
 
 export default function RootLayout({
@@ -28,7 +28,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="pt-BR"> {/* Changed lang to pt-BR */}
       {/* Apply font variables and base classes directly from the imported font objects */}
       <body className={`${GeistSans.variable} ${GeistMono.variable} font-sans antialiased bg-background text-foreground`}>
         {children}
