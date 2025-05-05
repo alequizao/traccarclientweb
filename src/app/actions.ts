@@ -28,7 +28,6 @@ export async function sendTraccarData(input: SendTraccarDataInput): Promise<{ su
   const validation = TraccarDataSchema.safeParse(input);
 
   if (!validation.success) {
-    // Combina erros de validação em uma única mensagem
     const errorMessages = validation.error.errors.map((e) => e.message).join(', ');
     console.error('Erro de Validação da Ação do Servidor:', errorMessages);
     return { success: false, message: `Dados inválidos: ${errorMessages}` };
@@ -36,7 +35,6 @@ export async function sendTraccarData(input: SendTraccarDataInput): Promise<{ su
 
   const { serverUrl, deviceId, lat, lon, timestamp, accuracy, altitude, speed, bearing } = validation.data;
 
-  // Constrói URL e parâmetros
   let validatedUrl: URL;
   try {
     validatedUrl = new URL(serverUrl);
@@ -61,67 +59,66 @@ export async function sendTraccarData(input: SendTraccarDataInput): Promise<{ su
   if (speed !== undefined && speed >= 0) params.append('speed', speed.toString());
   if (bearing !== undefined && bearing >= 0) params.append('bearing', bearing.toString());
 
-  // Constrói a URL final para a requisição POST
-  // Alguns servidores podem esperar parâmetros de query na URL mesmo para POST
   const urlWithParams = `${validatedUrl.origin}${validatedUrl.pathname}?${params.toString()}`;
-
 
   console.log(`Ação do Servidor: Enviando POST para ${urlWithParams}`);
 
+  const FETCH_TIMEOUT_MS = 30000; // 30 segundos
+
   try {
-    // Fetch do lado do servidor não tem problemas de CORS
     const response = await fetch(urlWithParams, {
       method: 'POST',
-      // Cabeçalhos podem não ser necessários, mas definir Content-Length como 0 às vezes é necessário para POST sem corpo
       headers: {
-          'Content-Length': '0'
+          'Content-Length': '0', // Essencial para POST sem corpo com alguns servidores
+          'Accept': 'text/plain', // Indica que esperamos texto simples na resposta (embora geralmente vazia)
       },
-      // Aumenta o timeout para 30 segundos
-      signal: AbortSignal.timeout(30000), // Aumentado para 30 segundos
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), // Timeout configurado
     });
 
     console.log(`Ação do Servidor: Status da Resposta: ${response.status}`);
 
     if (response.ok) {
-      // O protocolo Traccar OsmAnd geralmente retorna 200 OK com corpo vazio em caso de sucesso
       return { success: true, message: 'Localização enviada com sucesso (servidor).' };
     } else {
       const statusText = response.statusText || `Código ${response.status}`;
-      const responseBody = await response.text().catch(() => 'Não foi possível ler o corpo da resposta.'); // Tenta obter mais detalhes
+      const responseBody = await response.text().catch(() => 'Não foi possível ler o corpo da resposta.');
       console.error(`Erro da Ação do Servidor: ${statusText}`, responseBody);
-      return { success: false, message: `Falha no servidor Traccar: ${statusText}. Detalhes: ${responseBody.substring(0, 100)}` };
+      return { success: false, message: `Falha no servidor Traccar: ${statusText}. Detalhes: ${responseBody.substring(0, 150)}` };
     }
-  } catch (error: any) { // Usando 'any' para inspecionar a causa
+  } catch (error: any) {
     console.error("Erro de Fetch da Ação do Servidor:", error);
-    console.error("Detalhes do Erro (Causa):", error?.cause); // Log da causa do erro
-
     let errMsg = 'Erro desconhecido no servidor ao enviar dados.';
-     if (error instanceof Error) {
-        // Usa error.name para verificação de AbortError
-        if (error.name === 'AbortError' || error.message.includes('timed out')) {
-            errMsg = `Tempo esgotado (30s) ao conectar ao servidor Traccar (${validatedUrl.origin}). Verifique se está online, acessível pela rede do servidor da aplicação e se o firewall permite a conexão.`;
-        } else if (error.message.includes('fetch failed')) {
-            // Erros genéricos de 'fetch failed' podem ter causas variadas
-            const cause = error.cause as any; // Tenta obter mais detalhes da causa
-            if (cause?.code === 'ECONNREFUSED') {
-                errMsg = `Conexão recusada pelo servidor Traccar (${validatedUrl.origin}). Verifique se está online e a porta (${validatedUrl.port || 'padrão'}) está correta e escutando.`;
-            } else if (cause?.code === 'ENOTFOUND' || cause?.code === 'EAI_AGAIN') {
-                errMsg = `Não foi possível encontrar/resolver o servidor Traccar (${validatedUrl.origin}). Verifique a URL e a configuração de DNS do servidor da aplicação.`;
-            } else if (cause?.code === 'ECONNRESET') {
-                 errMsg = `A conexão foi redefinida pelo servidor Traccar (${validatedUrl.origin}).`;
-            } else if (cause?.code && cause.code.startsWith('ERR_TLS_CERT') || cause?.code === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE') {
-                 errMsg = `Erro de certificado SSL/TLS ao conectar a ${validatedUrl.origin}. Se estiver usando HTTPS com um certificado autoassinado, configure o servidor para confiar nele ou use HTTP.`;
-            }
-             else {
-                // Mensagem genérica para 'fetch failed' se nenhuma causa específica for encontrada
-                errMsg = `Erro de rede no servidor ao tentar conectar a ${validatedUrl.origin}: fetch failed. Verifique a conectividade da rede do servidor, firewall e se a URL está correta. Causa: ${cause?.code || error.message}`;
-            }
+
+    // Verifica se é um erro de AbortController (timeout)
+    if (error.name === 'AbortError' || (error.cause && error.cause.name === 'AbortError') || error.message.includes('timed out')) {
+        errMsg = `Tempo esgotado (${FETCH_TIMEOUT_MS / 1000}s) ao tentar conectar ao servidor Traccar (${validatedUrl.origin}). Verifique se o servidor está online, acessível pela rede da aplicação, e se o firewall permite a conexão.`;
+        console.error("Detalhes do Erro (Timeout):", error.cause);
+    }
+    // Verifica erros de conexão específicos se disponíveis na causa (pode variar por ambiente Node.js)
+    else if (error.cause) {
+        const cause = error.cause as any;
+        console.error("Detalhes do Erro (Causa):", cause); // Log da causa
+        if (cause.code === 'ECONNREFUSED') {
+            errMsg = `Conexão recusada pelo servidor Traccar (${validatedUrl.origin}). Verifique se o servidor está online e a porta (${validatedUrl.port || 'padrão'}) está correta e escutando.`;
+        } else if (cause.code === 'ENOTFOUND' || cause.code === 'EAI_AGAIN') {
+            errMsg = `Não foi possível encontrar/resolver o host do servidor Traccar (${validatedUrl.hostname}). Verifique a URL e a configuração de DNS do servidor da aplicação.`;
+        } else if (cause.code === 'ECONNRESET') {
+            errMsg = `A conexão foi redefinida pelo servidor Traccar (${validatedUrl.origin}).`;
+        } else if (cause.code && (cause.code.startsWith('ERR_TLS_CERT') || cause.code === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE')) {
+            errMsg = `Erro de certificado SSL/TLS ao conectar a ${validatedUrl.origin}. Se estiver usando HTTPS com um certificado autoassinado, configure o servidor Node.js para confiar nele (não recomendado para produção) ou use HTTP.`;
+        } else if (cause.code === 'UND_ERR_CONNECT_TIMEOUT') { // Código específico para timeout de conexão em `undici` (usado pelo Node >= 18 fetch)
+             errMsg = `Tempo esgotado (${FETCH_TIMEOUT_MS / 1000}s) ao estabelecer conexão com o servidor Traccar (${validatedUrl.origin}). Verifique a conectividade da rede, firewall e se o servidor está respondendo rapidamente.`;
         }
          else {
-             // Outros erros de rede não relacionados a timeout ou fetch failed
-            errMsg = `Erro de rede no servidor: ${error.message}`;
+            // Mensagem mais genérica baseada na causa, se existir
+            errMsg = `Erro de rede no servidor ao conectar a ${validatedUrl.origin}. Causa: ${cause.code || cause.message || error.message}. Verifique a conectividade da rede, firewall e URL.`;
         }
     }
+    // Fallback para mensagem de erro genérica se nenhuma causa específica for identificada
+    else if (error instanceof Error) {
+        errMsg = `Erro de rede no servidor: ${error.message}. Verifique a URL, conectividade e firewall.`;
+    }
+
     return { success: false, message: errMsg };
   }
 }
