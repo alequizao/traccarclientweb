@@ -36,6 +36,8 @@ const TraccarWebClient: NextPage = () => {
         } else {
            // If no saved URL or it's empty, ensure default is set (redundant but safe)
            setServerUrl(DEFAULT_SERVER_URL);
+           // Also save the default back to localStorage if it wasn't set
+           localStorage.setItem('traccarServerUrl', DEFAULT_SERVER_URL);
         }
         if (savedInterval) {
             const parsedInterval = parseInt(savedInterval, 10);
@@ -52,7 +54,10 @@ const TraccarWebClient: NextPage = () => {
   // Save config to localStorage when inputs change
   useEffect(() => {
     try {
-        localStorage.setItem('traccarDeviceId', deviceId);
+        // Don't save if deviceId is empty to avoid issues on first load
+        if (deviceId.trim() !== '') {
+            localStorage.setItem('traccarDeviceId', deviceId);
+        }
     } catch (error) {
         console.error("Erro ao salvar deviceId no localStorage:", error);
     }
@@ -60,7 +65,10 @@ const TraccarWebClient: NextPage = () => {
 
   useEffect(() => {
      try {
-        localStorage.setItem('traccarServerUrl', serverUrl);
+        // Don't save if serverUrl is empty
+        if (serverUrl.trim() !== '') {
+           localStorage.setItem('traccarServerUrl', serverUrl);
+        }
      } catch (error) {
          console.error("Erro ao salvar serverUrl no localStorage:", error);
      }
@@ -91,7 +99,7 @@ const TraccarWebClient: NextPage = () => {
     if (!deviceId || !serverUrl) {
       setErrorMessage("ID do Dispositivo e URL do Servidor são obrigatórios.");
       setIsTracking(false);
-      setStatusMessage("Parado");
+      setStatusMessage("Parado - Configuração necessária");
       if (intervalIdRef.current) clearInterval(intervalIdRef.current);
       intervalIdRef.current = null;
       return;
@@ -104,9 +112,12 @@ const TraccarWebClient: NextPage = () => {
     let validatedUrl: URL;
     try {
         validatedUrl = new URL(serverUrl);
-        // Optionally add check for http/https if needed later
-    } catch (_) {
-        setErrorMessage(`URL do Servidor inválida: ${serverUrl}`);
+        if (!['http:', 'https:'].includes(validatedUrl.protocol)) {
+            throw new Error("Protocolo inválido. Use http ou https.");
+        }
+    } catch (e) {
+        const errMsg = e instanceof Error ? e.message : "URL inválida";
+        setErrorMessage(`URL do Servidor inválida: ${serverUrl}. ${errMsg}`);
         setIsTracking(false);
         setStatusMessage("Erro de Configuração");
         if (intervalIdRef.current) clearInterval(intervalIdRef.current);
@@ -129,9 +140,8 @@ const TraccarWebClient: NextPage = () => {
     // Ensure heading is non-negative before sending
     if (heading !== null && heading >= 0) params.append('bearing', heading.toString());
 
-    // Construct the URL ensuring no double slashes and appending query params
-    const baseUrl = validatedUrl.origin + (validatedUrl.pathname === '/' ? '' : validatedUrl.pathname.replace(/\/$/, ''));
-    const urlWithParams = `${baseUrl}/?${params.toString()}`;
+    // Construct the URL - OsmAnd protocol usually targets the root path of the specified port.
+    const urlWithParams = `${validatedUrl.origin}/?${params.toString()}`;
 
 
     setStatusMessage(`Enviando localização... (${latitude.toFixed(5)}, ${longitude.toFixed(5)})`);
@@ -142,26 +152,27 @@ const TraccarWebClient: NextPage = () => {
         method: 'POST', // Traccar typically expects POST for osmand protocol
         // Keep headers commented out unless server requires them
         // headers: {
-        //   'Content-Type': 'application/x-www-form-urlencoded',
+        //   'Content-Type': 'application/x-www-form-urlencoded', // fetch usually sets this automatically for URLSearchParams
         // },
+        // Ensure no 'mode: no-cors' as it hides errors
       });
 
       if (response.ok) {
           // console.log('Location sent successfully');
           toast({
               title: "Localização Enviada",
-              description: `Dados enviados para ${baseUrl}`,
+              description: `Dados enviados para ${validatedUrl.origin}`,
           });
       } else {
           const statusText = response.statusText || `Código ${response.status}`;
           console.error("Falha ao enviar localização - Resposta não OK:", response.status, statusText, response.url);
-          // Check for potential CORS hint (though browser might hide details)
-          let detailedError = `Falha ao enviar localização: ${statusText}.`;
-          if (response.type === 'opaque') { // Opaque responses often indicate CORS issues with no-cors mode, but we removed that. Still a hint.
-             detailedError += ' Pode ser um problema de CORS no servidor.';
-          } else {
-             detailedError += ' Verifique URL, rede e configuração CORS do servidor.';
-          }
+          let detailedError = `Falha ao enviar localização: ${statusText}. Verifique URL e o estado do servidor Traccar.`;
+          // Specific hint for common 400/404 errors or others
+          if (response.status === 400) detailedError += " (Bad Request - Dados inválidos?).";
+          if (response.status === 404) detailedError += " (Not Found - Endpoint errado?).";
+          // Note: Browser might still hide CORS details even if 'no-cors' isn't used.
+          detailedError += ' Se persistir, verifique a configuração CORS do servidor.';
+
           setErrorMessage(detailedError);
           setStatusMessage("Erro no Envio");
           toast({
@@ -172,25 +183,25 @@ const TraccarWebClient: NextPage = () => {
       }
 
     } catch (error) {
-      console.error("Falha ao enviar localização (Fetch Error):", error);
-      // Improve error message for fetch failures (likely network or CORS preflight)
-      let errMsg = 'Erro de rede ou CORS.';
-      if (error instanceof TypeError) {
-         // TypeError is common for CORS preflight failures or network issues
-         errMsg = `Erro de rede ou CORS: ${error.message}. Verifique a conexão com a internet, a URL do servidor (${urlWithParams}) e se o servidor Traccar está configurado para aceitar requisições desta origem (CORS).`;
-      } else if (error instanceof Error) {
-         errMsg = error.message; // Use the specific error message if available
-      } else {
-         errMsg = 'Erro desconhecido ao tentar enviar dados.';
-      }
+        console.error("Falha ao enviar localização (Fetch Error):", error);
+        // Improve error message for fetch failures (likely network or CORS preflight)
+        let errMsg = 'Erro ao conectar ao servidor.';
+        if (error instanceof TypeError && error.message.toLowerCase().includes('failed to fetch')) {
+           // This specific TypeError is highly indicative of Network or CORS issues
+           errMsg = `Falha na conexão: Verifique a conexão com a internet, a URL do servidor (${urlWithParams}), e crucialmente, se o servidor Traccar (${validatedUrl.origin}) está configurado para aceitar requisições desta origem (CORS).`;
+        } else if (error instanceof Error) {
+           errMsg = `Erro inesperado: ${error.message}`; // Use the specific error message if available
+        } else {
+           errMsg = 'Erro desconhecido ao tentar enviar dados.';
+        }
 
-      setErrorMessage(`Falha ao enviar localização: ${errMsg}`);
-      setStatusMessage("Erro no Envio");
-       toast({
-          title: "Erro de Conexão",
-          description: errMsg,
-          variant: "destructive",
-      });
+        setErrorMessage(errMsg);
+        setStatusMessage("Erro na Conexão");
+         toast({
+            title: "Erro de Conexão",
+            description: "Não foi possível conectar ao servidor. Verifique a rede e a configuração CORS.", // Simpler toast
+            variant: "destructive",
+        });
     }
   }, [deviceId, serverUrl, toast]); // Removed intervalSeconds as it's not directly used here
 
@@ -212,7 +223,22 @@ const TraccarWebClient: NextPage = () => {
     // Define error handler function separately
     const handleGeoError = (error: GeolocationPositionError) => {
         console.error("Erro ao obter localização:", error);
-        const errMsg = `Erro de GPS: ${error.message} (Código: ${error.code}). Por favor, habilite os serviços de localização e garanta as permissões.`;
+        let errMsg = `Erro de GPS: ${error.message} (Código: ${error.code}).`;
+        switch (error.code) {
+            case error.PERMISSION_DENIED:
+                errMsg += " Permissão negada. Habilite a localização para este site nas configurações do navegador.";
+                break;
+            case error.POSITION_UNAVAILABLE:
+                errMsg += " Posição não disponível. Verifique se o GPS está ativado e com boa recepção.";
+                break;
+            case error.TIMEOUT:
+                errMsg += " Tempo esgotado para obter a localização.";
+                break;
+            default:
+                 errMsg += " Erro desconhecido ao obter localização.";
+                 break;
+        }
+
         setErrorMessage(errMsg);
         setIsTracking(false); // Stop tracking if location fetch fails
         setStatusMessage("Erro de GPS");
@@ -231,13 +257,14 @@ const TraccarWebClient: NextPage = () => {
     };
 
     // Request current position
+    setStatusMessage('Obtendo localização...'); // Indicate we're trying to get GPS
     navigator.geolocation.getCurrentPosition(
         handleGeoSuccess,
         handleGeoError,
         {
             enableHighAccuracy: true,
             maximumAge: 0, // Force fresh data
-            timeout: 10000, // 10 seconds timeout
+            timeout: 15000, // Increased timeout to 15 seconds
         }
     );
 
@@ -266,12 +293,15 @@ const TraccarWebClient: NextPage = () => {
 
     // Basic URL validation before starting
     try {
-        new URL(serverUrl);
+        const validatedUrl = new URL(serverUrl);
+        if (!['http:', 'https:'].includes(validatedUrl.protocol)) {
+           throw new Error("Protocolo inválido.");
+        }
     } catch (_) {
-        setErrorMessage(`URL do Servidor inválida: ${serverUrl}`);
+        setErrorMessage(`URL do Servidor inválida: ${serverUrl}. Use http:// ou https://`);
         toast({
             title: "URL Inválida",
-            description: "Por favor, insira uma URL válida para o servidor.",
+            description: "Por favor, insira uma URL válida para o servidor (http:// ou https://).",
             variant: "destructive",
         });
         return;
@@ -412,7 +442,7 @@ const TraccarWebClient: NextPage = () => {
               className="bg-card rounded-md shadow-sm"
               aria-required="true"
             />
-             <p className="text-xs text-muted-foreground pt-1">Certifique-se que a URL usa a porta 5055 (protocolo osmand) e está acessível (verifique CORS).</p>
+             <p className="text-xs text-muted-foreground pt-1">Use protocolo HTTP ou HTTPS. Porta padrão OsmAnd: 5055. Verifique CORS no servidor.</p>
           </div>
 
           <div className="space-y-2">
