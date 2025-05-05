@@ -77,8 +77,8 @@ export async function sendTraccarData(input: SendTraccarDataInput): Promise<{ su
       headers: {
           'Content-Length': '0'
       },
-      // Add a timeout (e.g., 10 seconds)
-      signal: AbortSignal.timeout(10000),
+      // Increase timeout to 20 seconds
+      signal: AbortSignal.timeout(20000),
     });
 
     console.log(`Server Action: Response Status: ${response.status}`);
@@ -96,8 +96,9 @@ export async function sendTraccarData(input: SendTraccarDataInput): Promise<{ su
     console.error("Server Action Fetch Error:", error);
     let errMsg = 'Erro desconhecido no servidor ao enviar dados.';
      if (error instanceof Error) {
+        // Use error.name for AbortError check
         if (error.name === 'AbortError' || error.message.includes('timed out')) {
-            errMsg = `Tempo esgotado ao conectar ao servidor Traccar (${validatedUrl.origin}). Verifique se está online e acessível.`;
+            errMsg = `Tempo esgotado ao conectar ao servidor Traccar (${validatedUrl.origin}). Verifique se está online, acessível e se o tempo limite (20s) é suficiente.`;
         } else if (error.message.includes('ECONNREFUSED')) {
             errMsg = `Conexão recusada pelo servidor Traccar (${validatedUrl.origin}). Verifique se está online e a porta está correta.`;
         } else if (error.message.includes('ENOTFOUND') || error.message.includes('EAI_AGAIN')) {
