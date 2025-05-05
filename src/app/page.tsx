@@ -10,14 +10,14 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Play, Square, AlertCircle, Wifi, WifiOff } from 'lucide-react';
 import { useToast } from "@/hooks/use-toast";
 
-const DEFAULT_SERVER_URL = 'http://65.21.243.46:5055';
+const DEFAULT_SERVER_URL = 'http://65.21.243.46:5055'; // Default URL as requested
 
 const TraccarWebClient: NextPage = () => {
   const [deviceId, setDeviceId] = useState<string>('');
   const [serverUrl, setServerUrl] = useState<string>(DEFAULT_SERVER_URL); // Set default server URL
   const [intervalSeconds, setIntervalSeconds] = useState<number>(10);
   const [isTracking, setIsTracking] = useState<boolean>(false);
-  const [statusMessage, setStatusMessage] = useState<string>('Parado'); // Translated
+  const [statusMessage, setStatusMessage] = useState<string>('Parado');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const intervalIdRef = useRef<NodeJS.Timeout | null>(null);
   const { toast } = useToast();
@@ -30,12 +30,22 @@ const TraccarWebClient: NextPage = () => {
         const savedInterval = localStorage.getItem('traccarIntervalSeconds');
 
         if (savedDeviceId) setDeviceId(savedDeviceId);
-        // Only overwrite default if a saved URL exists
-        if (savedServerUrl) setServerUrl(savedServerUrl);
-        if (savedInterval) setIntervalSeconds(parseInt(savedInterval, 10));
+        // Only overwrite default if a saved URL exists and is not empty
+        if (savedServerUrl && savedServerUrl.trim() !== '') {
+           setServerUrl(savedServerUrl);
+        } else {
+           // If no saved URL or it's empty, ensure default is set (redundant but safe)
+           setServerUrl(DEFAULT_SERVER_URL);
+        }
+        if (savedInterval) {
+            const parsedInterval = parseInt(savedInterval, 10);
+            if (!isNaN(parsedInterval) && parsedInterval > 0) {
+              setIntervalSeconds(parsedInterval);
+            }
+        }
     } catch (error) {
-        console.error("Erro ao acessar localStorage:", error); // Translated
-        setErrorMessage("Não foi possível carregar as configurações salvas. O LocalStorage pode estar indisponível."); // Translated
+        console.error("Erro ao acessar localStorage:", error);
+        setErrorMessage("Não foi possível carregar as configurações salvas. O LocalStorage pode estar indisponível.");
     }
   }, []);
 
@@ -44,27 +54,26 @@ const TraccarWebClient: NextPage = () => {
     try {
         localStorage.setItem('traccarDeviceId', deviceId);
     } catch (error) {
-        console.error("Erro ao salvar deviceId no localStorage:", error); // Translated
+        console.error("Erro ao salvar deviceId no localStorage:", error);
     }
   }, [deviceId]);
 
   useEffect(() => {
      try {
-        // Don't save the default URL unless it's explicitly changed by the user
-        // This check might be redundant if state only updates on change, but good for clarity
-        if (serverUrl !== DEFAULT_SERVER_URL || localStorage.getItem('traccarServerUrl')) {
-           localStorage.setItem('traccarServerUrl', serverUrl);
-        }
+        localStorage.setItem('traccarServerUrl', serverUrl);
      } catch (error) {
-         console.error("Erro ao salvar serverUrl no localStorage:", error); // Translated
+         console.error("Erro ao salvar serverUrl no localStorage:", error);
      }
   }, [serverUrl]);
 
   useEffect(() => {
-    try {
+    // Only save valid positive integers
+    if (!isNaN(intervalSeconds) && intervalSeconds > 0 && Number.isInteger(intervalSeconds)) {
+      try {
         localStorage.setItem('traccarIntervalSeconds', intervalSeconds.toString());
-    } catch (error) {
-        console.error("Erro ao salvar intervalSeconds no localStorage:", error); // Translated
+      } catch (error) {
+        console.error("Erro ao salvar intervalSeconds no localStorage:", error);
+      }
     }
   }, [intervalSeconds]);
 
@@ -80,9 +89,9 @@ const TraccarWebClient: NextPage = () => {
 
   const sendLocationData = useCallback(async (position: GeolocationPosition) => {
     if (!deviceId || !serverUrl) {
-      setErrorMessage("ID do Dispositivo e URL do Servidor são obrigatórios."); // Translated
+      setErrorMessage("ID do Dispositivo e URL do Servidor são obrigatórios.");
       setIsTracking(false);
-      setStatusMessage("Parado"); // Translated
+      setStatusMessage("Parado");
       if (intervalIdRef.current) clearInterval(intervalIdRef.current);
       intervalIdRef.current = null;
       return;
@@ -92,17 +101,18 @@ const TraccarWebClient: NextPage = () => {
     const timestamp = Math.round(position.timestamp / 1000); // Convert ms to seconds
 
     // Basic URL validation
+    let validatedUrl: URL;
     try {
-        new URL(serverUrl);
+        validatedUrl = new URL(serverUrl);
+        // Optionally add check for http/https if needed later
     } catch (_) {
-        setErrorMessage(`URL do Servidor inválida: ${serverUrl}`); // Translated
+        setErrorMessage(`URL do Servidor inválida: ${serverUrl}`);
         setIsTracking(false);
-        setStatusMessage("Erro de Configuração"); // Translated
+        setStatusMessage("Erro de Configuração");
         if (intervalIdRef.current) clearInterval(intervalIdRef.current);
         intervalIdRef.current = null;
         return;
     }
-
 
     const params = new URLSearchParams({
       id: deviceId,
@@ -119,75 +129,81 @@ const TraccarWebClient: NextPage = () => {
     // Ensure heading is non-negative before sending
     if (heading !== null && heading >= 0) params.append('bearing', heading.toString());
 
-    // Ensure serverUrl ends with a single slash before appending query params
-    const baseUrl = serverUrl.replace(/\/$/, '');
+    // Construct the URL ensuring no double slashes and appending query params
+    const baseUrl = validatedUrl.origin + (validatedUrl.pathname === '/' ? '' : validatedUrl.pathname.replace(/\/$/, ''));
     const urlWithParams = `${baseUrl}/?${params.toString()}`;
 
 
-    setStatusMessage(`Enviando localização... (${latitude.toFixed(5)}, ${longitude.toFixed(5)})`); // Translated
+    setStatusMessage(`Enviando localização... (${latitude.toFixed(5)}, ${longitude.toFixed(5)})`);
     setErrorMessage(null); // Clear previous errors on successful attempt
 
     try {
       const response = await fetch(urlWithParams, {
-        method: 'POST', // Traccar typically expects POST for osmAnd protocol
-        // mode: 'no-cors', // Removed 'no-cors' to get potentially clearer CORS errors
-        // Add headers if needed by the server, though osmand protocol usually doesn't require them
+        method: 'POST', // Traccar typically expects POST for osmand protocol
+        // Keep headers commented out unless server requires them
         // headers: {
-        //   'Content-Type': 'application/x-www-form-urlencoded', // Example if needed
+        //   'Content-Type': 'application/x-www-form-urlencoded',
         // },
       });
 
-      // Basic check for HTTP success codes (won't work fully with redirects if fetch doesn't follow)
       if (response.ok) {
           // console.log('Location sent successfully');
           toast({
-              title: "Localização Enviada", // Translated
-              description: `Dados enviados para ${baseUrl}`, // Translated
+              title: "Localização Enviada",
+              description: `Dados enviados para ${baseUrl}`,
           });
       } else {
-          // Try to get more info if possible (might be limited by CORS)
           const statusText = response.statusText || `Código ${response.status}`;
-          console.error("Falha ao enviar localização - Resposta não OK:", response.status, statusText); // Translated
-          setErrorMessage(`Falha ao enviar localização: ${statusText}. Verifique URL, rede e CORS do servidor.`); // Translated
-          setStatusMessage("Erro no Envio"); // Translated
-           toast({
-              title: "Erro no Envio", // Translated
-              description: `Falha ao enviar dados: ${statusText}`, // Translated
+          console.error("Falha ao enviar localização - Resposta não OK:", response.status, statusText, response.url);
+          // Check for potential CORS hint (though browser might hide details)
+          let detailedError = `Falha ao enviar localização: ${statusText}.`;
+          if (response.type === 'opaque') { // Opaque responses often indicate CORS issues with no-cors mode, but we removed that. Still a hint.
+             detailedError += ' Pode ser um problema de CORS no servidor.';
+          } else {
+             detailedError += ' Verifique URL, rede e configuração CORS do servidor.';
+          }
+          setErrorMessage(detailedError);
+          setStatusMessage("Erro no Envio");
+          toast({
+              title: "Erro no Envio",
+              description: `Falha ao enviar dados: ${statusText}`,
               variant: "destructive",
           });
       }
 
     } catch (error) {
-      console.error("Falha ao enviar localização (Fetch Error):", error); // Translated error context
-      // Distinguish between different error types if possible
-      let errMsg = 'Erro de rede desconhecido'; // Translated
+      console.error("Falha ao enviar localização (Fetch Error):", error);
+      // Improve error message for fetch failures (likely network or CORS preflight)
+      let errMsg = 'Erro de rede ou CORS.';
       if (error instanceof TypeError) {
-         // TypeError often relates to network issues (DNS, connection refused) or CORS preflight failures
-         errMsg = `Erro de rede ou CORS: ${error.message}. Verifique a conexão e a configuração CORS do servidor.`; // Translated
+         // TypeError is common for CORS preflight failures or network issues
+         errMsg = `Erro de rede ou CORS: ${error.message}. Verifique a conexão com a internet, a URL do servidor (${urlWithParams}) e se o servidor Traccar está configurado para aceitar requisições desta origem (CORS).`;
       } else if (error instanceof Error) {
-         errMsg = error.message;
+         errMsg = error.message; // Use the specific error message if available
+      } else {
+         errMsg = 'Erro desconhecido ao tentar enviar dados.';
       }
 
-      setErrorMessage(`Falha ao enviar localização: ${errMsg}`); // Translated
-      setStatusMessage("Erro no Envio"); // Translated
+      setErrorMessage(`Falha ao enviar localização: ${errMsg}`);
+      setStatusMessage("Erro no Envio");
        toast({
-          title: "Erro no Envio", // Translated
-          description: `Falha ao enviar dados: ${errMsg}`, // Translated
+          title: "Erro de Conexão",
+          description: errMsg,
           variant: "destructive",
       });
     }
-  }, [deviceId, serverUrl, toast]);
+  }, [deviceId, serverUrl, toast]); // Removed intervalSeconds as it's not directly used here
 
   const handleTracking = useCallback(() => {
     if (!('geolocation' in navigator)) {
-        setErrorMessage("Geolocalização não é suportada por este navegador."); // Translated
+        setErrorMessage("Geolocalização não é suportada por este navegador.");
         setIsTracking(false);
-        setStatusMessage("GPS Não Suportado"); // Translated
+        setStatusMessage("GPS Não Suportado");
         if (intervalIdRef.current) clearInterval(intervalIdRef.current);
         intervalIdRef.current = null;
          toast({
-            title: "GPS Não Suportado", // Translated
-            description: "Geolocalização não é suportada por este navegador.", // Translated
+            title: "GPS Não Suportado",
+            description: "Geolocalização não é suportada por este navegador.",
             variant: "destructive",
         });
         return; // Exit early if geolocation is not available
@@ -195,15 +211,15 @@ const TraccarWebClient: NextPage = () => {
 
     // Define error handler function separately
     const handleGeoError = (error: GeolocationPositionError) => {
-        console.error("Erro ao obter localização:", error); // Translated
-        const errMsg = `Erro de GPS: ${error.message} (Código: ${error.code}). Por favor, habilite os serviços de localização e garanta as permissões.`; // Translated
+        console.error("Erro ao obter localização:", error);
+        const errMsg = `Erro de GPS: ${error.message} (Código: ${error.code}). Por favor, habilite os serviços de localização e garanta as permissões.`;
         setErrorMessage(errMsg);
         setIsTracking(false); // Stop tracking if location fetch fails
-        setStatusMessage("Erro de GPS"); // Translated
+        setStatusMessage("Erro de GPS");
         if (intervalIdRef.current) clearInterval(intervalIdRef.current);
         intervalIdRef.current = null;
          toast({
-            title: "Erro de GPS", // Translated
+            title: "Erro de GPS",
             description: errMsg,
             variant: "destructive",
         });
@@ -230,19 +246,19 @@ const TraccarWebClient: NextPage = () => {
   const startTracking = useCallback(() => {
     // Validation checks
     if (!deviceId || !serverUrl) {
-      setErrorMessage("ID do Dispositivo e URL do Servidor devem ser configurados antes de iniciar."); // Translated
+      setErrorMessage("ID do Dispositivo e URL do Servidor devem ser configurados antes de iniciar.");
       toast({
-        title: "Configuração Incompleta", // Translated
-        description: "Por favor, insira o ID do Dispositivo e a URL do Servidor.", // Translated
+        title: "Configuração Incompleta",
+        description: "Por favor, insira o ID do Dispositivo e a URL do Servidor.",
         variant: "destructive",
       });
       return;
     }
-     if (!Number.isInteger(intervalSeconds) || intervalSeconds <= 0) {
-      setErrorMessage("O intervalo deve ser um número inteiro positivo de segundos."); // Translated
+     if (isNaN(intervalSeconds) || !Number.isInteger(intervalSeconds) || intervalSeconds <= 0) {
+      setErrorMessage("O intervalo deve ser um número inteiro positivo de segundos.");
        toast({
-        title: "Intervalo Inválido", // Translated
-        description: "O intervalo de rastreamento deve ser um número inteiro positivo.", // Translated
+        title: "Intervalo Inválido",
+        description: "O intervalo de rastreamento deve ser um número inteiro positivo.",
         variant: "destructive",
       });
       return;
@@ -252,10 +268,10 @@ const TraccarWebClient: NextPage = () => {
     try {
         new URL(serverUrl);
     } catch (_) {
-        setErrorMessage(`URL do Servidor inválida: ${serverUrl}`); // Translated
+        setErrorMessage(`URL do Servidor inválida: ${serverUrl}`);
         toast({
-            title: "URL Inválida", // Translated
-            description: "Por favor, insira uma URL válida para o servidor.", // Translated
+            title: "URL Inválida",
+            description: "Por favor, insira uma URL válida para o servidor.",
             variant: "destructive",
         });
         return;
@@ -264,10 +280,10 @@ const TraccarWebClient: NextPage = () => {
 
     // Check geolocation support again before starting interval
     if (!('geolocation' in navigator)) {
-       setErrorMessage("Geolocalização não é suportada por este navegador. Não é possível iniciar o rastreamento."); // Translated
+       setErrorMessage("Geolocalização não é suportada por este navegador. Não é possível iniciar o rastreamento.");
        toast({
-           title: "GPS Não Suportado", // Translated
-           description: "Não é possível iniciar o rastreamento sem suporte à geolocalização do navegador.", // Translated
+           title: "GPS Não Suportado",
+           description: "Não é possível iniciar o rastreamento sem suporte à geolocalização do navegador.",
            variant: "destructive",
        });
        return;
@@ -275,7 +291,7 @@ const TraccarWebClient: NextPage = () => {
 
 
     setIsTracking(true);
-    setStatusMessage("Iniciando..."); // Translated
+    setStatusMessage("Iniciando...");
     setErrorMessage(null); // Clear any previous errors
 
     handleTracking(); // Attempt initial send immediately
@@ -289,53 +305,66 @@ const TraccarWebClient: NextPage = () => {
     intervalIdRef.current = setInterval(handleTracking, intervalSeconds * 1000);
 
     toast({
-        title: "Rastreamento Iniciado", // Translated
-        description: `Enviando localização a cada ${intervalSeconds} segundos.`, // Translated
+        title: "Rastreamento Iniciado",
+        description: `Enviando localização a cada ${intervalSeconds} segundos.`,
     });
 
   }, [deviceId, serverUrl, intervalSeconds, handleTracking, toast]);
 
   const stopTracking = useCallback(() => {
     setIsTracking(false);
-    setStatusMessage("Parado"); // Translated
+    setStatusMessage("Parado");
     setErrorMessage(null); // Clear errors when stopped
     if (intervalIdRef.current) {
       clearInterval(intervalIdRef.current);
       intervalIdRef.current = null;
     }
     toast({
-        title: "Rastreamento Parado", // Translated
+        title: "Rastreamento Parado",
     });
   }, [toast]);
 
   const handleIntervalChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const value = parseInt(e.target.value, 10);
-     // Allow empty input temporarily, maybe default to 1 or show validation later
-    if (e.target.value === '') {
-        setIntervalSeconds(NaN); // Use NaN to indicate invalid state temporarily
+    const valueString = e.target.value;
+    // Allow empty input temporarily, use NaN to indicate invalid state
+    if (valueString === '') {
+        setIntervalSeconds(NaN);
+        setErrorMessage("O intervalo não pode ser vazio."); // Provide immediate feedback
         return;
     }
-    // Only update if it's a positive integer
+
+    const value = parseInt(valueString, 10);
+
+    // Only update state if it's a positive integer
     if (!isNaN(value) && value >= 1 && Number.isInteger(value)) {
       setIntervalSeconds(value);
+      setErrorMessage(null); // Clear error message if input becomes valid
        // If tracking is active, immediately restart the interval with the new value
        if (isTracking) {
          if (intervalIdRef.current) clearInterval(intervalIdRef.current);
+         // Only set new interval if the value is valid
          intervalIdRef.current = setInterval(handleTracking, value * 1000);
          toast({
-             title: "Intervalo Atualizado", // Translated
-             description: `Agora enviando localização a cada ${value} segundos.`, // Translated
+             title: "Intervalo Atualizado",
+             description: `Agora enviando localização a cada ${value} segundos.`,
          });
        }
     } else {
-        // Optionally provide feedback for invalid input (e.g., non-integer, zero, negative)
+        // Keep NaN state but show error and toast
+        setIntervalSeconds(NaN);
+        const errorMsg = "O intervalo deve ser um número inteiro positivo maior que zero.";
+        setErrorMessage(errorMsg);
         toast({
-            title: "Intervalo Inválido", // Translated
-            description: "O intervalo deve ser um número inteiro positivo.", // Translated
+            title: "Intervalo Inválido",
+            description: errorMsg,
             variant: "destructive",
         });
-        // You might want to revert to the previous valid value or keep the NaN state
-        // For now, just showing a toast. The startTracking function will prevent starting with NaN.
+        // Stop interval if tracking and interval becomes invalid
+        if (isTracking && intervalIdRef.current) {
+            clearInterval(intervalIdRef.current);
+            intervalIdRef.current = null;
+            setStatusMessage("Intervalo Inválido - Rastreamento Pausado");
+        }
     }
   };
 
@@ -344,56 +373,61 @@ const TraccarWebClient: NextPage = () => {
     <div className="min-h-screen bg-background flex items-center justify-center p-4 font-sans">
       <Card className="w-full max-w-md shadow-lg rounded-xl border">
         <CardHeader className="p-6">
-          <CardTitle className="text-2xl font-bold text-center text-foreground">Cliente Web Traccar</CardTitle> {/* Translated */}
+          <CardTitle className="text-2xl font-bold text-center text-foreground">Cliente Web Traccar</CardTitle>
           <CardDescription className="text-center text-muted-foreground pt-1">
-            Envie a localização do seu navegador para o servidor Traccar. {/* Translated */}
+            Envie a localização do seu navegador para o servidor Traccar.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6 p-6">
           {errorMessage && (
             <Alert variant="destructive" className="rounded-md">
               <AlertCircle className="h-4 w-4" />
-              <AlertTitle>Erro</AlertTitle> {/* Translated */}
+              <AlertTitle>Erro</AlertTitle>
               <AlertDescription>{errorMessage}</AlertDescription>
             </Alert>
           )}
 
           <div className="space-y-2">
-            <Label htmlFor="deviceId" className="font-medium">Identificador do Dispositivo</Label> {/* Translated */}
+            <Label htmlFor="deviceId" className="font-medium">Identificador do Dispositivo</Label>
             <Input
               id="deviceId"
-              placeholder="Insira um ID único para o dispositivo" // Translated
+              placeholder="Insira um ID único para o dispositivo"
               value={deviceId}
               onChange={(e) => setDeviceId(e.target.value)}
               disabled={isTracking}
               className="bg-card rounded-md shadow-sm"
+              aria-required="true"
             />
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="serverUrl" className="font-medium">URL do Servidor Traccar</Label> {/* Translated */}
+            <Label htmlFor="serverUrl" className="font-medium">URL do Servidor Traccar</Label>
             <Input
               id="serverUrl"
-              placeholder={DEFAULT_SERVER_URL} // Show default as placeholder
+              placeholder="Ex: http://seu.servidor.com:5055" // More specific placeholder
               value={serverUrl}
               onChange={(e) => setServerUrl(e.target.value)}
               disabled={isTracking}
               type="url"
               className="bg-card rounded-md shadow-sm"
+              aria-required="true"
             />
-             <p className="text-xs text-muted-foreground pt-1">Certifique-se que a URL usa a porta 5055 (protocolo osmand).</p> {/* Translated */}
+             <p className="text-xs text-muted-foreground pt-1">Certifique-se que a URL usa a porta 5055 (protocolo osmand) e está acessível (verifique CORS).</p>
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="interval" className="font-medium">Intervalo de Rastreamento (segundos)</Label> {/* Translated */}
+            <Label htmlFor="interval" className="font-medium">Intervalo de Rastreamento (segundos)</Label>
             <Input
               id="interval"
               type="number"
               min="1"
               step="1" // Ensure whole numbers
+              placeholder="Mínimo 1 segundo" // Placeholder for interval
               value={isNaN(intervalSeconds) ? '' : intervalSeconds} // Show empty string if NaN
               onChange={handleIntervalChange}
-              className="bg-card rounded-md shadow-sm"
+              className={`bg-card rounded-md shadow-sm ${isNaN(intervalSeconds) ? 'border-destructive ring-destructive' : ''}`} // Indicate error on input
+              aria-required="true"
+              aria-invalid={isNaN(intervalSeconds)} // Mark as invalid if NaN
             />
           </div>
 
@@ -405,11 +439,11 @@ const TraccarWebClient: NextPage = () => {
                   ? 'bg-destructive text-destructive-foreground hover:bg-destructive/90'
                   : 'bg-primary text-primary-foreground hover:bg-primary/90'
                }`}
-              aria-label={isTracking ? 'Parar Rastreamento' : 'Iniciar Rastreamento'} // Translated
-              disabled={isTracking ? false : (isNaN(intervalSeconds) || !deviceId || !serverUrl)} // Disable start if config invalid
+              aria-label={isTracking ? 'Parar Rastreamento' : 'Iniciar Rastreamento'}
+              disabled={isTracking ? false : (isNaN(intervalSeconds) || !deviceId || !serverUrl)} // Disable start if config invalid or interval is NaN
             >
               {isTracking ? <Square className="mr-2 h-5 w-5" /> : <Play className="mr-2 h-5 w-5" />}
-              {isTracking ? 'Parar Rastreamento' : 'Iniciar Rastreamento'} {/* Translated */}
+              {isTracking ? 'Parar Rastreamento' : 'Iniciar Rastreamento'}
             </Button>
 
              <div className={`flex items-center space-x-2 py-2 px-4 rounded-full text-sm font-medium transition-colors duration-200 ${
@@ -420,7 +454,7 @@ const TraccarWebClient: NextPage = () => {
                  : 'bg-muted text-muted-foreground'
               }`}>
               { errorMessage ? <AlertCircle className="h-5 w-5"/> : (isTracking ? <Wifi className="h-5 w-5"/> : <WifiOff className="h-5 w-5"/>) }
-              <span>{statusMessage}</span>
+              <span className="truncate max-w-xs">{statusMessage}</span> {/* Prevent long status messages from breaking layout */}
             </div>
           </div>
         </CardContent>
@@ -430,3 +464,5 @@ const TraccarWebClient: NextPage = () => {
 };
 
 export default TraccarWebClient;
+
+    
