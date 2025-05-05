@@ -17,7 +17,7 @@ const TraccarDataSchema = z.object({
 
 export type SendTraccarDataInput = z.infer<typeof TraccarDataSchema>;
 
-const FETCH_TIMEOUT_MS = 30000; // 30 segundos
+const FETCH_TIMEOUT_MS = 60000; // 60 segundos (aumentado de 30000)
 
 /**
  * Envia dados de localização para o servidor Traccar especificado usando o protocolo OsmAnd.
@@ -70,16 +70,14 @@ export async function sendTraccarData(input: SendTraccarDataInput): Promise<{ su
   // Monta a URL final com os parâmetros
   const urlWithParams = `${validatedUrl.origin}${validatedUrl.pathname.endsWith('/') ? validatedUrl.pathname : validatedUrl.pathname + '/'}?${params.toString()}`; // Garante que a URL base termine com / se não tiver path explícito
 
-  console.log(`[Server Action] Enviando POST para: ${urlWithParams}`);
+  console.log(`[Server Action] Enviando POST para: ${urlWithParams} (Timeout: ${FETCH_TIMEOUT_MS / 1000}s)`);
 
   try {
     const response = await fetch(urlWithParams, {
       method: 'POST',
       headers: {
-        // O protocolo OsmAnd geralmente não precisa de Content-Type ou corpo,
-        // mas Content-Length: 0 pode ser necessário para alguns proxies/servidores.
         'Content-Length': '0',
-        'Accept': 'text/plain', // Indica que esperamos texto simples (geralmente vazio)
+        'Accept': 'text/plain',
       },
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), // Define o timeout da requisição
     });
@@ -87,10 +85,8 @@ export async function sendTraccarData(input: SendTraccarDataInput): Promise<{ su
     console.log(`[Server Action] Status da Resposta: ${response.status}`);
 
     if (response.ok) {
-      // Traccar geralmente retorna 200 OK ou 202 Accepted com corpo vazio
       return { success: true, message: 'Localização enviada com sucesso para o servidor Traccar.' };
     } else {
-      // Se o servidor Traccar respondeu com erro (4xx, 5xx)
       const statusText = response.statusText || `Código ${response.status}`;
       const responseBody = await response.text().catch(() => 'Não foi possível ler o corpo da resposta.');
       console.error(`[Server Action] Erro do Servidor Traccar: ${statusText}`, responseBody);
@@ -103,9 +99,9 @@ export async function sendTraccarData(input: SendTraccarDataInput): Promise<{ su
     const targetServer = validatedUrl.origin;
 
     // Verifica se é um erro de timeout (AbortError ou código específico)
-    if (error.name === 'AbortError' || error.code === 'UND_ERR_CONNECT_TIMEOUT' || (error.cause && error.cause.code === 'UND_ERR_CONNECT_TIMEOUT')) {
-      userFriendlyMessage = `Tempo esgotado (${FETCH_TIMEOUT_MS / 1000}s) ao tentar conectar ou receber resposta do servidor Traccar (${targetServer}). Verifique se o servidor Traccar está online, se a URL está correta e se não há bloqueios de rede/firewall.`;
-      console.error(`[Server Action] Detalhes do Timeout: Causa - ${error.cause ? JSON.stringify(error.cause) : 'N/A'}`);
+    if (error.name === 'AbortError' || error.code === 'UND_ERR_CONNECT_TIMEOUT' || error.message.includes('timeout') || (error.cause && error.cause.code === 'UND_ERR_CONNECT_TIMEOUT')) {
+       userFriendlyMessage = `Tempo esgotado (${FETCH_TIMEOUT_MS / 1000}s) ao tentar conectar ou receber resposta do servidor Traccar (${targetServer}). Verifique se o servidor Traccar está online, se a URL está correta e se não há bloqueios de rede/firewall.`;
+       console.error(`[Server Action] Detalhes do Timeout: Causa - ${error.cause ? JSON.stringify(error.cause) : 'N/A'}, Message: ${error.message}`);
     }
     // Verifica outros erros de conexão comuns
     else if (error.cause) {
@@ -124,7 +120,12 @@ export async function sendTraccarData(input: SendTraccarDataInput): Promise<{ su
         userFriendlyMessage = `Erro de rede (${cause.code || 'desconhecido'}) ao conectar a ${targetServer}. Detalhes: ${cause.message || error.message}. Verifique a conectividade e configurações.`;
       }
     }
-    // Fallback para erros genéricos
+    // Fallback para erros genéricos do fetch
+    else if (error.message && error.message.includes('fetch failed')) {
+        userFriendlyMessage = `Erro de rede no servidor ao tentar conectar a ${targetServer}: ${error.message}. Verifique a conectividade da rede do servidor, firewall e se a URL está correta.`;
+        if (error.cause) userFriendlyMessage += ` Causa: ${error.cause.code || error.cause.message}`;
+    }
+    // Fallback para outros erros
     else if (error instanceof Error) {
       userFriendlyMessage = `Erro inesperado no servidor: ${error.message}. Verifique os logs do servidor da aplicação para mais detalhes.`;
     }
