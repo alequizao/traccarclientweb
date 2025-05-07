@@ -1,3 +1,4 @@
+// src/app/actions.ts
 'use server';
 
 import { z } from 'zod';
@@ -17,7 +18,7 @@ const TraccarDataSchema = z.object({
 
 export type SendTraccarDataInput = z.infer<typeof TraccarDataSchema>;
 
-const FETCH_TIMEOUT_MS = 45000; // 45 segundos (server-to-server can be longer)
+const FETCH_TIMEOUT_MS = 30000; // 30 segundos, conforme mensagens de erro recentes
 
 /**
  * Envia dados de localização para o servidor Traccar especificado usando o protocolo OsmAnd.
@@ -55,10 +56,10 @@ export async function sendTraccarData(input: SendTraccarDataInput): Promise<{ su
     timestamp: timestamp.toString(),
   });
 
-  if (accuracy !== undefined && accuracy >= 0) params.append('hdop', (accuracy / 5).toFixed(1)); // OsmAnd uses hdop. Approximation.
+  if (accuracy !== undefined && accuracy >= 0) params.append('hdop', (accuracy / 5).toFixed(1)); // OsmAnd usa hdop. Aproximação.
   if (altitude !== undefined) params.append('altitude', altitude.toString());
   if (speed !== undefined && speed >= 0) {
-      const speedInKnots = speed * 1.94384;
+      const speedInKnots = speed * 1.94384; // m/s para knots
       params.append('speed', speedInKnots.toFixed(2));
   }
   if (bearing !== undefined && bearing >= 0) params.append('bearing', bearing.toString());
@@ -71,66 +72,50 @@ export async function sendTraccarData(input: SendTraccarDataInput): Promise<{ su
   try {
     const response = await fetch(urlWithParams, {
       method: 'POST',
-      headers: { 'Content-Length': '0', 'Accept': 'text/plain' },
+      headers: { 'Content-Length': '0', 'Accept': 'text/plain' }, // OsmAnd geralmente não precisa de corpo para POST
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
 
-    console.log(`[Server Action] Status da Resposta: ${response.status}, StatusText: ${response.statusText}`);
-    const responseBody = await response.text().catch(() => 'Não foi possível ler o corpo da resposta.'); // Read body for logging
+    const responseBodyForLog = await response.text().catch(() => 'Não foi possível ler o corpo da resposta.');
+    console.log(`[Server Action] Status da Resposta Traccar: ${response.status}, StatusText: ${response.statusText}, Corpo: ${responseBodyForLog.substring(0,100)}`);
 
     if (response.ok) {
-      return { success: true, message: `Localização enviada para ${validatedUrl.hostname}. Resposta: ${responseBody.substring(0,100) || response.statusText}` };
+      // Considerar resposta vazia ou "OK" como sucesso para Traccar/OsmAnd
+      return { success: true, message: `Localização enviada para ${validatedUrl.hostname}. Resposta: ${responseBodyForLog.substring(0,100) || response.statusText}` };
     } else {
       const statusText = response.statusText || `Código ${response.status}`;
-      console.error(`[Server Action] Erro do Servidor Traccar: ${statusText}`, responseBody);
-      return { success: false, message: `Falha no servidor Traccar (${statusText}). Detalhes: ${responseBody.substring(0, 200)}` };
+      console.error(`[Server Action] Erro do Servidor Traccar: ${statusText}`, responseBodyForLog);
+      return { success: false, message: `Falha no servidor Traccar (${statusText}). Detalhes: ${responseBodyForLog.substring(0, 200)}` };
     }
   } catch (error: any) {
-    console.error("[Server Action] Erro durante o fetch:", error);
-    let userFriendlyMessage = 'Ocorreu um erro no servidor ao tentar enviar os dados para o Traccar.';
+    console.error("[Server Action] Erro durante o fetch para Traccar:", error);
+    let userFriendlyMessage = 'Ocorreu um erro no servidor da aplicação ao tentar enviar os dados para o Traccar.';
     const targetServer = validatedUrl.origin;
 
-    if (error.name === 'AbortError' || error.code === 'UND_ERR_CONNECT_TIMEOUT' || error.message?.includes('timeout')) {
+    if (error.name === 'AbortError' || error.message?.includes('timeout') || error.code === 'UND_ERR_CONNECT_TIMEOUT' ) {
        userFriendlyMessage = `Tempo esgotado (${FETCH_TIMEOUT_MS / 1000}s) ao tentar conectar ou receber resposta do servidor Traccar (${targetServer}). Verifique se o servidor Traccar está online, se a URL está correta e se não há bloqueios de rede/firewall.`;
        console.error(`[Server Action] Detalhes do Timeout: Name: ${error.name}, Code: ${error.code}, Message: ${error.message}, Cause: ${error.cause ? JSON.stringify(error.cause) : 'N/A'}`);
     } else if (error.cause) {
       const cause = error.cause as any;
-      console.error("[Server Action] Causa do Erro:", cause);
+      console.error("[Server Action] Causa do Erro de Fetch:", cause);
       const port = validatedUrl.port || (validatedUrl.protocol === 'https:' ? '443' : '80');
       if (cause.code === 'ECONNREFUSED') {
         userFriendlyMessage = `Conexão recusada pelo servidor Traccar (${targetServer} na porta ${port}). Verifique se o servidor está online e a porta está correta e acessível.`;
       } else if (cause.code === 'ENOTFOUND' || cause.code === 'EAI_AGAIN') {
         userFriendlyMessage = `Não foi possível encontrar/resolver o endereço do servidor Traccar (${validatedUrl.hostname}). Verifique se a URL está correta e se o DNS está funcionando no servidor da aplicação.`;
       } else if (cause.code === 'ECONNRESET') {
-        userFriendlyMessage = `A conexão foi redefinida inesperadamente pelo servidor Traccar (${targetServer}). Problema temporário no Traccar ou na rede.`;
+        userFriendlyMessage = `A conexão foi redefinida inesperadamente pelo servidor Traccar (${targetServer}). Pode ser um problema temporário no Traccar ou na rede.`;
       } else if (cause.code?.startsWith('ERR_TLS_CERT') || cause.code === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' || cause.code === 'DEPTH_ZERO_SELF_SIGNED_CERT') {
-        userFriendlyMessage = `Erro de certificado SSL/TLS ao conectar a ${targetServer}. Certificado inválido, autoassinado ou cadeia incompleta.`;
+        userFriendlyMessage = `Erro de certificado SSL/TLS ao conectar a ${targetServer}. O certificado pode ser inválido, autoassinado ou a cadeia de certificados está incompleta.`;
       } else {
         userFriendlyMessage = `Erro de rede (${cause.code || 'desconhecido'}) ao conectar a ${targetServer}. Detalhes: ${cause.message || error.message}. Verifique a conectividade e configurações.`;
       }
-    } else if (error.message?.includes('fetch failed')) {
-        userFriendlyMessage = `Erro de rede no servidor ao tentar conectar a ${targetServer}: ${error.message}. Verifique a conectividade da rede do servidor, firewall e se a URL está correta.`;
+    } else if (error.message?.includes('fetch failed')) { // Fallback genérico para "fetch failed"
+        userFriendlyMessage = `Erro de rede no servidor da aplicação ao tentar conectar a ${targetServer}: ${error.message}. Verifique a conectividade da rede do servidor, firewall e se a URL está correta.`;
         if (error.cause) userFriendlyMessage += ` Causa: ${error.cause.code || error.cause.message}`;
     } else if (error instanceof Error) {
-      userFriendlyMessage = `Erro inesperado no servidor: ${error.message}. Verifique os logs do servidor da aplicação para mais detalhes.`;
+      userFriendlyMessage = `Erro inesperado no servidor da aplicação: ${error.message}. Verifique os logs do servidor da aplicação para mais detalhes.`;
     }
-
     return { success: false, message: userFriendlyMessage };
   }
 }
-
-// Exemplo de uso (apenas para referência, não será chamado diretamente pelo cliente com SW)
-// async function exampleUsage() {
-//   const result = await sendTraccarData({
-//     serverUrl: "http://localhost:5055",
-//     deviceId: "testDeviceNode",
-//     lat: 10.12345,
-//     lon: -20.54321,
-//     timestamp: Math.floor(Date.now() / 1000),
-//     accuracy: 10,
-//     speed: 5.5, // m/s
-//     bearing: 90
-//   });
-//   console.log("Resultado do envio de exemplo:", result);
-// }
-// exampleUsage();
