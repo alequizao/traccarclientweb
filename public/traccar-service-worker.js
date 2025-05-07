@@ -44,8 +44,7 @@ async function callLogTraccarApi(locationData) {
         const resultJson = await response.json();
 
         if (response.ok && resultJson.success) {
-            sendMessageToClients({ type: 'success', message: `[SW] ${resultJson.message || 'Dados enviados com sucesso pela API.'}` });
-            // lastSuccessfulSendTimestamp = Date.now(); // Only update on actual success from Traccar confirmed by action
+            sendMessageToClients({ type: 'success', message: `${resultJson.message || 'Dados enviados com sucesso pela API.'}` });
         } else {
             sendMessageToClients({ type: 'error', message: `[SW] API retornou erro (HTTP ${response.status}): ${resultJson.message || 'Erro desconhecido da API.'}` });
         }
@@ -59,14 +58,11 @@ async function callLogTraccarApi(locationData) {
 
 function handlePositionUpdate(position) {
     if (!isCurrentlyTracking || !config.deviceId || !config.serverUrl) {
-        // sendMessageToClients({ type: 'status', message: '[SW] Rastreamento não ativo ou configuração incompleta. Posição ignorada.' });
         return;
     }
 
     const now = Date.now();
     if (now - lastAttemptedSendTimestamp < (config.intervalSeconds * 1000)) {
-        // console.log(`[SW] Throttling send. Last attempt: ${lastAttemptedSendTimestamp}, Now: ${now}, Interval: ${config.intervalSeconds}s`);
-        // sendMessageToClients({ type: 'status', message: `[SW] Aguardando intervalo de ${config.intervalSeconds}s...` });
         return;
     }
     lastAttemptedSendTimestamp = now;
@@ -86,15 +82,16 @@ function handlePositionUpdate(position) {
         ...(heading !== null && heading >= 0 && { bearing: heading }),
     };
     
-    // sendMessageToClients({ type: 'status', message: `[SW] Localização obtida: ${latitude.toFixed(5)}, ${longitude.toFixed(5)}. Enviando...` });
     callLogTraccarApi(dataToSend);
 }
 
 function handlePositionError(error) {
     let errMsg = `[SW] Erro ao obter localização GPS (${error.code}): ${error.message}.`;
+    let criticalError = false;
     switch (error.code) {
         case error.PERMISSION_DENIED:
             errMsg = "[SW] Permissão de localização negada. O rastreamento em segundo plano será interrompido.";
+            criticalError = true;
             stopTrackingLogic(); // Stop tracking if permission is denied
             break;
         case error.POSITION_UNAVAILABLE:
@@ -105,24 +102,27 @@ function handlePositionError(error) {
             break;
     }
     sendMessageToClients({ type: 'error', message: errMsg });
-    // Do not stop tracking for temporary errors like POSITION_UNAVAILABLE or TIMEOUT
+    if (criticalError) {
+        isCurrentlyTracking = false;
+        sendMessageToClients({ type: 'tracking_status', isTracking: false, message: errMsg });
+    }
 }
 
 function startTrackingLogic() {
     if (!('geolocation' in navigator)) {
-        sendMessageToClients({ type: 'error', message: '[SW] Geolocalização não é suportada neste navegador/worker.' });
+        const errorMsg = '[SW] Geolocalização não é suportada neste navegador/worker. O rastreamento em segundo plano não pode ser iniciado.';
+        sendMessageToClients({ type: 'error', message: errorMsg });
+        isCurrentlyTracking = false; 
+        sendMessageToClients({ type: 'tracking_status', isTracking: false, message: errorMsg });
         return;
     }
     if (watchId !== null) {
-        // sendMessageToClients({ type: 'status', message: '[SW] Tentativa de iniciar rastreamento que já está ativo.' });
         return;
     }
 
-    // sendMessageToClients({ type: 'status', message: '[SW] Iniciando rastreamento no Service Worker...' });
     isCurrentlyTracking = true;
-    lastAttemptedSendTimestamp = 0; // Reset timestamp to allow immediate first send attempt
+    lastAttemptedSendTimestamp = 0; 
 
-    // Check for permissions first
     navigator.permissions.query({ name: 'geolocation' }).then(permissionStatus => {
         if (permissionStatus.state === 'granted') {
             watchId = navigator.geolocation.watchPosition(
@@ -130,32 +130,44 @@ function startTrackingLogic() {
                 handlePositionError,
                 {
                     enableHighAccuracy: true,
-                    maximumAge: 0, // Don't use cached position
-                    timeout: 20000, // Timeout for getting a position (20 seconds)
+                    maximumAge: 0, 
+                    timeout: 20000, 
                 }
             );
             sendMessageToClients({ type: 'tracking_status', isTracking: true, message: '[SW] Rastreamento em segundo plano iniciado.' });
         } else if (permissionStatus.state === 'prompt') {
-            sendMessageToClients({ type: 'error', message: '[SW] Permissão de localização necessária. O navegador pode solicitar agora.' });
-            // Attempt to trigger watchPosition anyway, it might trigger the prompt if main page can't.
-            // However, SW usually cannot trigger prompts directly. Page must handle it.
-             watchId = navigator.geolocation.watchPosition(
-                handlePositionUpdate,
-                handlePositionError,
-                { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 }
-            );
-             // The above likely won't prompt from SW. The page needs to ensure permission first.
-        } else { // denied
-            sendMessageToClients({ type: 'error', message: '[SW] Permissão de localização negada. Não é possível iniciar o rastreamento.' });
+            const promptMsg = '[SW] Permissão de localização necessária. A página principal deve solicitar a permissão.';
+            sendMessageToClients({ type: 'error', message: promptMsg });
+            // Attempting to watchPosition here from SW usually doesn't trigger user prompt.
+            // Page needs to ensure permission is granted first.
+            // We will set tracking to false as it effectively cannot start without permission.
             isCurrentlyTracking = false;
-            sendMessageToClients({ type: 'tracking_status', isTracking: false, message: '[SW] Falha ao iniciar: permissão negada.' });
+            sendMessageToClients({ type: 'tracking_status', isTracking: false, message: '[SW] Falha ao iniciar: permissão pendente. Solicite na página.' });
+        } else { // denied
+            const deniedMsg = '[SW] Permissão de localização negada. Não é possível iniciar o rastreamento.';
+            sendMessageToClients({ type: 'error', message: deniedMsg });
+            isCurrentlyTracking = false;
+            sendMessageToClients({ type: 'tracking_status', isTracking: false, message: deniedMsg });
         }
+        
         permissionStatus.onchange = () => {
             if (permissionStatus.state !== 'granted' && isCurrentlyTracking) {
-                sendMessageToClients({ type: 'error', message: '[SW] Permissão de localização revogada. Parando rastreamento.' });
-                stopTrackingLogic();
+                const revokedMsg = '[SW] Permissão de localização revogada. Parando rastreamento.';
+                sendMessageToClients({ type: 'error', message: revokedMsg });
+                stopTrackingLogic(); // This will send its own tracking_status update
+            } else if (permissionStatus.state === 'granted' && !isCurrentlyTracking && config.deviceId && config.serverUrl) {
+                // If permission was just granted and we were not tracking (e.g. stuck in prompt state)
+                // and we have config, try to start.
+                // This is an edge case, typically start is initiated by explicit command.
+                // For now, let's keep it simple: user needs to click "Start" again if permission was granted later.
             }
         };
+    }).catch(error => {
+        // Error querying permissions
+        const permErrorMsg = `[SW] Erro ao verificar permissões de localização: ${error.message}. Não é possível iniciar.`;
+        sendMessageToClients({ type: 'error', message: permErrorMsg });
+        isCurrentlyTracking = false;
+        sendMessageToClients({ type: 'tracking_status', isTracking: false, message: permErrorMsg });
     });
 }
 
@@ -163,12 +175,9 @@ function stopTrackingLogic() {
     if (watchId !== null) {
         navigator.geolocation.clearWatch(watchId);
         watchId = null;
-        // sendMessageToClients({ type: 'status', message: '[SW] Rastreamento em segundo plano parado.' });
-    } else {
-        // sendMessageToClients({ type: 'status', message: '[SW] Rastreamento já estava parado.' });
     }
     isCurrentlyTracking = false;
-    isSendingLocationData = false; // Reset sending lock
+    isSendingLocationData = false; 
     sendMessageToClients({ type: 'tracking_status', isTracking: false, message: '[SW] Rastreamento em segundo plano interrompido.' });
 }
 
@@ -178,34 +187,33 @@ self.addEventListener('message', (event) => {
     const { command, data } = event.data;
 
     if (command === 'start-tracking') {
-        config = { ...config, ...data }; // Update config
-        // sendMessageToClients({ type: 'status', message: `[SW] Configuração recebida: ID ${config.deviceId}, URL ${config.serverUrl}, Intervalo ${config.intervalSeconds}s` });
+        config = { ...config, ...data }; 
         startTrackingLogic();
     } else if (command === 'stop-tracking') {
         stopTrackingLogic();
     } else if (command === 'get-status') {
+        // Send a more detailed status, especially if an error condition prevented starting
+        let statusMsg = isCurrentlyTracking ? '[SW] Rastreamento ativo.' : '[SW] Rastreamento parado.';
+        if (!isCurrentlyTracking && !('geolocation' in navigator)) {
+            statusMsg = '[SW] Falha crítica: Geolocalização indisponível no worker.';
+        }
+        // We could also check permission status here, but it's async and might be complex.
+        // The startTrackingLogic handles most permission issues.
         sendMessageToClients({ 
             type: 'tracking_status', 
             isTracking: isCurrentlyTracking, 
-            message: isCurrentlyTracking ? '[SW] Rastreamento ativo.' : '[SW] Rastreamento parado.' 
+            message: statusMsg 
         });
     } else if (command === 'update-config') {
         config = { ...config, ...data };
         sendMessageToClients({ type: 'status', message: `[SW] Configuração atualizada: Intervalo para ${config.intervalSeconds}s.`})
-        // If tracking, the new interval will apply on the next send attempt due to throttling logic.
-        // If watchPosition options need to change, it would need to be stopped and restarted.
-        // For simplicity, intervalSeconds is used for throttling `callLogTraccarApi` calls.
     }
 });
 
 self.addEventListener('install', (event) => {
-    // console.log('[SW] Service Worker instalado.');
-    // sendMessageToClients({type: 'status', message: '[SW] Service Worker Instalado.'});
-    event.waitUntil(self.skipWaiting()); // Force the waiting service worker to become the active service worker.
+    event.waitUntil(self.skipWaiting()); 
 });
 
 self.addEventListener('activate', (event) => {
-    // console.log('[SW] Service Worker ativado.');
-    // sendMessageToClients({type: 'status', message: '[SW] Service Worker Ativado.'});
-    event.waitUntil(self.clients.claim()); // Become available to all pages controlled by this service worker.
+    event.waitUntil(self.clients.claim()); 
 });
