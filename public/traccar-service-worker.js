@@ -29,7 +29,7 @@ async function callLogTraccarApi(locationData) {
         return;
     }
     isSendingLocationData = true;
-    // sendMessageToClients({ type: 'status', message: '[SW] Tentando enviar dados para /api/log-traccar...' });
+    sendMessageToClients({ type: 'status', message: '[SW] Tentando enviar dados para o servidor Traccar...' });
 
     try {
         const response = await fetch('/api/log-traccar', {
@@ -84,11 +84,11 @@ self.addEventListener('message', (event) => {
     if (command === 'start-tracking') {
         config = { ...config, ...data.config };
         isCurrentlyTracking = true;
-        lastAttemptedSendTimestamp = 0;
-        sendMessageToClients({ type: 'tracking_status', isTracking: true, message: '[SW] Pronto para receber e encaminhar dados de localização.' });
+        lastAttemptedSendTimestamp = 0; // Resetar para permitir envio imediato se necessário
+        sendMessageToClients({ type: 'tracking_status', isTracking: true, message: '[SW] Pronto para receber e encaminhar dados.' });
     } else if (command === 'stop-tracking') {
         isCurrentlyTracking = false;
-        isSendingLocationData = false;
+        isSendingLocationData = false; // Resetar semáforo de envio
         sendMessageToClients({ type: 'tracking_status', isTracking: false, message: '[SW] Encaminhamento de dados interrompido.' });
     } else if (command === 'location-update') {
         // console.log('[SW] Comando location-update recebido:', data);
@@ -104,7 +104,7 @@ self.addEventListener('message', (event) => {
         });
     } else if (command === 'update-config') {
         config = { ...config, ...data };
-        sendMessageToClients({ type: 'status', message: `[SW] Configuração de encaminhamento atualizada: Intervalo para ${config.intervalSeconds}s.`});
+        sendMessageToClients({ type: 'status', message: `[SW] Config. atualizada: Intervalo para ${config.intervalSeconds}s.`});
     }
 });
 

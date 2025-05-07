@@ -24,15 +24,16 @@ const isValidHttpUrl = (string: string): boolean => {
 const TraccarWebClient: NextPage = () => {
   const [deviceId, setDeviceId] = useState<string>('');
   const [serverUrl, setServerUrl] = useState<string>(DEFAULT_SERVER_URL);
-  const [intervalSeconds, setIntervalSeconds] = useState<number>(10); // Intervalo de envio para o Traccar (usado pelo SW)
+  const [intervalSeconds, setIntervalSeconds] = useState<number>(10);
   
-  const [isUiDisabled, setIsUiDisabled] = useState<boolean>(false); // Controla UI durante operações
+  const [isUiDisabled, setIsUiDisabled] = useState<boolean>(false);
   const [isServiceWorkerActive, setIsServiceWorkerActive] = useState<boolean>(false);
-  const [isPageTracking, setIsPageTracking] = useState<boolean>(false); // Se a página está ativamente capturando GPS
-  const [isSwForwarding, setIsSwForwarding] = useState<boolean>(false); // Se o SW está configurado para encaminhar
+  const [isPageTracking, setIsPageTracking] = useState<boolean>(false);
+  const [isSwForwarding, setIsSwForwarding] = useState<boolean>(false);
 
   const [statusMessage, setStatusMessage] = useState<string>('Aguardando serviço de comunicação...');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [lastSuccessfulSendTime, setLastSuccessfulSendTime] = useState<string | null>(null);
   
   const serviceWorkerRef = useRef<ServiceWorkerRegistration | null>(null);
   const locationWatchIdRef = useRef<number | null>(null);
@@ -43,10 +44,10 @@ const TraccarWebClient: NextPage = () => {
     if (serviceWorkerRef.current && serviceWorkerRef.current.active) {
       serviceWorkerRef.current.active.postMessage({ command, data });
     } else {
-      // Se o SW não estiver ativo, não podemos prosseguir com operações dependentes dele
       const swNotActiveError = "Serviço de comunicação inativo. Não foi possível executar a ação.";
       setErrorMessage(swNotActiveError);
       toast({ title: "Serviço Inativo", description: swNotActiveError, variant: "destructive"});
+      setIsServiceWorkerActive(false); // Ensure UI reflects this
     }
   }, [toast]);
 
@@ -62,7 +63,7 @@ const TraccarWebClient: NextPage = () => {
           setStatusMessage('Serviço de comunicação registrado. Verificando status...');
           toast({ title: "Serviço Registrado", description: "Serviço de comunicação pronto." });
           
-          sendCommandToSW('get-status'); // Pergunta ao SW seu status de encaminhamento
+          sendCommandToSW('get-status');
 
           navigator.serviceWorker.onmessage = (event) => {
             if (!isMountedRef.current) return;
@@ -72,25 +73,27 @@ const TraccarWebClient: NextPage = () => {
               case 'status':
                 setStatusMessage(message);
                 break;
-              case 'error': // Erros vindos do SW (ex: falha ao enviar para API)
+              case 'error':
                 setErrorMessage(message);
                 setStatusMessage(prev => prev.includes("Iniciando") || prev.includes("Verificando") ? "Falha na operação do serviço." : "Erro no serviço de comunicação.");
-                toast({ title: "Erro no Serviço de Comunicação", description: message, variant: "destructive" });
+                toast({ title: "Erro no Serviço", description: message, variant: "destructive" });
                 break;
-              case 'success': // Sucesso vindo do SW (ex: dados enviados para API)
-                setStatusMessage(`[Serviço] ${message} (${new Date().toLocaleTimeString()})`);
+              case 'success':
+                const successTime = new Date().toLocaleTimeString();
+                setStatusMessage(`[Serviço] ${message} (${successTime})`);
+                setLastSuccessfulSendTime(successTime);
                 setErrorMessage(null);
                 toast({ title: "Sucesso", description: message });
                 break;
-              case 'tracking_status': // Status de encaminhamento do SW
+              case 'tracking_status':
                 setIsSwForwarding(swIsForwardingStatus);
-                // Se a página acha que está rastreando mas o SW parou, atualiza status
                 if(isPageTracking && !swIsForwardingStatus && message && !message.toLowerCase().includes("pronto para receber")){
                     setStatusMessage(message || "Encaminhamento de dados parado pelo serviço.");
-                } else if (swIsForwardingStatus){
+                } else if (swIsForwardingStatus && message.toLowerCase().includes("pronto para receber")){
                     setStatusMessage(message || "Serviço pronto para encaminhar dados.");
+                } else if (message) { // General status update from SW
+                    setStatusMessage(message);
                 }
-                // Se o SW reportar erro no seu status, exiba
                 if (message && (message.toLowerCase().includes("falha") || message.toLowerCase().includes("erro"))) {
                     setErrorMessage(message);
                 }
@@ -119,10 +122,9 @@ const TraccarWebClient: NextPage = () => {
     }
     return () => {
         isMountedRef.current = false;
-        if (navigator.serviceWorker) {
+        if (navigator.serviceWorker && navigator.serviceWorker.onmessage) {
             navigator.serviceWorker.onmessage = null; 
         }
-        // Limpa o watchPosition se o componente for desmontado
         if (locationWatchIdRef.current !== null) {
             navigator.geolocation.clearWatch(locationWatchIdRef.current);
             locationWatchIdRef.current = null;
@@ -130,7 +132,6 @@ const TraccarWebClient: NextPage = () => {
     };
   }, [sendCommandToSW, toast, isPageTracking]);
 
-  // Carregar configurações do localStorage
   useEffect(() => {
     try {
       const savedDeviceId = localStorage.getItem('traccarDeviceId');
@@ -158,7 +159,6 @@ const TraccarWebClient: NextPage = () => {
     }
   }, [toast]);
 
-  // Salvar configurações no localStorage
   useEffect(() => { if (deviceId.trim() !== '') localStorage.setItem('traccarDeviceId', deviceId); else localStorage.removeItem('traccarDeviceId'); }, [deviceId]);
   useEffect(() => { if (serverUrl && serverUrl.trim() !== '' && isValidHttpUrl(serverUrl)) localStorage.setItem('traccarServerUrl', serverUrl); }, [serverUrl]);
   useEffect(() => { if (!isNaN(intervalSeconds) && intervalSeconds >= 1 && Number.isInteger(intervalSeconds)) localStorage.setItem('traccarIntervalSeconds', intervalSeconds.toString()); }, [intervalSeconds]);
@@ -168,11 +168,11 @@ const TraccarWebClient: NextPage = () => {
     if (!isMountedRef.current) return;
 
     const { latitude, longitude, accuracy, altitude, speed, heading } = position.coords;
-    const timestamp = Math.round(position.timestamp / 1000); // UNIX timestamp em seconds
+    const timestamp = Math.round(position.timestamp / 1000);
 
     const locationDataPayload = {
-        serverUrl: serverUrl, // SW precisa disso para o callLogTraccarApi
-        deviceId: deviceId,   // SW precisa disso para o callLogTraccarApi
+        serverUrl: serverUrl,
+        deviceId: deviceId,
         lat: latitude,
         lon: longitude,
         timestamp: timestamp,
@@ -182,11 +182,13 @@ const TraccarWebClient: NextPage = () => {
         ...(heading !== null && heading >= 0 && { bearing: heading }),
     };
     
-    // Envia os dados de localização para o Service Worker para encaminhamento
     sendCommandToSW('location-update', locationDataPayload);
-    setStatusMessage(`Localização obtida: ${latitude.toFixed(4)}, ${longitude.toFixed(4)} @ ${new Date(position.timestamp).toLocaleTimeString()}`);
+    // Only update status if not currently showing an attempt to send from SW
+    if (!statusMessage.includes("Tentando enviar")) {
+        setStatusMessage(`Localização obtida: ${latitude.toFixed(4)}, ${longitude.toFixed(4)} @ ${new Date(position.timestamp).toLocaleTimeString()}`);
+    }
 
-  }, [deviceId, serverUrl, sendCommandToSW]);
+  }, [deviceId, serverUrl, sendCommandToSW, statusMessage]);
 
   const handlePositionError = useCallback((error: GeolocationPositionError) => {
     if (!isMountedRef.current) return;
@@ -198,24 +200,23 @@ const TraccarWebClient: NextPage = () => {
             criticalErrorForPageTracking = true;
             break;
         case error.POSITION_UNAVAILABLE:
-            errMsg = "[GPS Página] Posição indisponível. Verifique o sinal do GPS.";
+            errMsg = "[GPS Página] Posição indisponível. Verifique o sinal do GPS ou as configurações de localização do dispositivo.";
             break;
         case error.TIMEOUT:
             errMsg = "[GPS Página] Tempo esgotado ao obter localização.";
             break;
     }
     setErrorMessage(errMsg);
-    toast({ title: "Erro de GPS na Página", description: errMsg, variant: "destructive" });
+    toast({ title: "Erro de GPS", description: errMsg, variant: "destructive" });
     
     if (criticalErrorForPageTracking) {
-        // Se a permissão foi negada na página, paramos tudo.
         if (locationWatchIdRef.current !== null) {
             navigator.geolocation.clearWatch(locationWatchIdRef.current);
             locationWatchIdRef.current = null;
         }
         setIsPageTracking(false);
-        sendCommandToSW('stop-tracking'); // Diz ao SW para parar de encaminhar também
-        setStatusMessage("Rastreamento parado devido à negação de permissão de GPS.");
+        sendCommandToSW('stop-tracking');
+        setStatusMessage("Rastreamento parado: permissão de GPS negada.");
     }
   }, [sendCommandToSW, toast]);
 
@@ -232,57 +233,36 @@ const TraccarWebClient: NextPage = () => {
     setStatusMessage("Solicitando permissão de localização...");
 
     try {
-      const permissionStatus = await navigator.permissions.query({ name: 'geolocation' });
-      
-      const startWatcher = () => {
-        if (locationWatchIdRef.current !== null) {
-          navigator.geolocation.clearWatch(locationWatchIdRef.current);
-        }
+      // Try direct watchPosition for permission prompt as it's more standard
+      // Fallback to getCurrentPosition if watchPosition doesn't prompt
+      return new Promise<boolean>((resolve) => {
         locationWatchIdRef.current = navigator.geolocation.watchPosition(
-          handlePositionUpdate,
-          handlePositionError,
-          { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 }
+          (position) => { // Success, permission likely granted or already was
+            if (!isMountedRef.current) return;
+            handlePositionUpdate(position);
+            setIsPageTracking(true);
+            setErrorMessage(null);
+            setStatusMessage("Rastreamento GPS ativo nesta página.");
+            toast({ title: "GPS Ativado", description: "Capturando localização nesta página." });
+            sendCommandToSW('start-tracking', { config: { deviceId, serverUrl, intervalSeconds } });
+            setIsUiDisabled(false);
+            resolve(true);
+          },
+          (error) => { // Error, could be permission denied
+            if (!isMountedRef.current) return;
+            handlePositionError(error); // This will set error message and toast
+            // If it was a fatal error (like PERMISSION_DENIED), handlePositionError already stops tracking.
+            setIsUiDisabled(false);
+            resolve(false);
+          },
+          { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 } // timeout for each position attempt
         );
-        setIsPageTracking(true);
-        setErrorMessage(null);
-        setStatusMessage("Rastreamento GPS ativo nesta página.");
-        toast({ title: "GPS Ativado", description: "Capturando localização nesta página." });
-        // Informa o SW para começar a encaminhar, passando a config atual
-        sendCommandToSW('start-tracking', { config: { deviceId, serverUrl, intervalSeconds } });
-        setIsUiDisabled(false);
-        return true;
-      };
-
-      if (permissionStatus.state === 'granted') {
-        return startWatcher();
-      } else if (permissionStatus.state === 'prompt') {
-        // Tenta obter a permissão uma vez. watchPosition não pode ser usado para pedir permissão.
-        return new Promise<boolean>((resolve) => {
-            navigator.geolocation.getCurrentPosition(
-                (position) => { // Permissão concedida
-                    handlePositionUpdate(position); // Envia a primeira posição
-                    resolve(startWatcher());
-                },
-                (error) => { // Permissão negada ou outro erro
-                    handlePositionError(error); // Trata o erro de permissão
-                    setIsUiDisabled(false);
-                    resolve(false);
-                },
-                { timeout: 15000, enableHighAccuracy: true } 
-            );
-        });
-      } else { // denied
-        const deniedMsg = "Permissão de localização negada. Habilite nas configurações do navegador para este site.";
-        setErrorMessage(deniedMsg);
-        toast({ title: "Permissão Negada", description: deniedMsg, variant: "destructive" });
-        setIsUiDisabled(false);
-        return false;
-      }
-    } catch (error) {
-      const queryErrorMsg = "Erro ao verificar/solicitar permissão de localização.";
+      });
+    } catch (error) { // Should not happen with modern browsers for watchPosition itself
+      const queryErrorMsg = "Erro inesperado ao tentar iniciar o monitoramento de localização.";
       console.error(queryErrorMsg, error);
       setErrorMessage(queryErrorMsg);
-      toast({ title: "Erro de Permissão", description: queryErrorMsg, variant: "destructive" });
+      toast({ title: "Erro de Localização", description: queryErrorMsg, variant: "destructive" });
       setIsUiDisabled(false);
       return false;
     }
@@ -298,7 +278,7 @@ const TraccarWebClient: NextPage = () => {
       setErrorMessage(`URL do Servidor inválida: ${serverUrl}. Use http:// ou https://.`); toast({ title: "URL Inválida", description: "Insira uma URL de servidor válida.", variant: "destructive" }); hasError = true;
     }
     if (isNaN(intervalSeconds) || !Number.isInteger(intervalSeconds) || intervalSeconds < 1) {
-      setErrorMessage("Intervalo de envio (para SW) inválido. Deve ser um número inteiro >= 1."); toast({ title: "Intervalo Inválido", description: "Insira um intervalo válido (número >= 1).", variant: "destructive" }); hasError = true;
+      setErrorMessage("Intervalo de envio inválido. Deve ser um número inteiro >= 1."); toast({ title: "Intervalo Inválido", description: "Insira um intervalo válido (número >= 1).", variant: "destructive" }); hasError = true;
     }
     if (!isServiceWorkerActive) {
       setErrorMessage("Serviço de comunicação não está ativo. Tente recarregar a página."); toast({ title: "Serviço Inativo", description: "O serviço de comunicação não iniciou.", variant: "destructive" }); hasError = true;
@@ -309,11 +289,10 @@ const TraccarWebClient: NextPage = () => {
       return;
     }
     
-    setErrorMessage(null);
+    setErrorMessage(null); // Clear previous errors
     const permissionGrantedAndWatcherStarted = await requestLocationPermissionAndStartWatcher();
     if (!permissionGrantedAndWatcherStarted) {
-        // Mensagem de erro já deve ter sido definida por requestLocationPermissionAndStartWatcher ou handlePositionError
-        setIsUiDisabled(false); // Garante que UI seja reabilitada
+        setIsUiDisabled(false);
     }
   };
 
@@ -325,9 +304,10 @@ const TraccarWebClient: NextPage = () => {
       locationWatchIdRef.current = null;
     }
     setIsPageTracking(false);
-    sendCommandToSW('stop-tracking'); // Diz ao SW para parar de encaminhar
-    toast({ title: "Rastreamento Interrompido", description: "Captura de GPS parada e serviço instruído a parar." });
-    setStatusMessage("Rastreamento parado. Feche esta aba/navegador para interromper completamente.");
+    sendCommandToSW('stop-tracking');
+    toast({ title: "Rastreamento Interrompido", description: "Captura de GPS e encaminhamento pelo serviço interrompidos." });
+    setStatusMessage("Rastreamento interrompido.");
+    // setLastSuccessfulSendTime(null); // Optionally clear last send time
     setIsUiDisabled(false);
   };
   
@@ -335,20 +315,20 @@ const TraccarWebClient: NextPage = () => {
     const valueString = e.target.value;
     if (valueString === '') {
       setIntervalSeconds(NaN); 
-      setErrorMessage("O intervalo de envio (para SW) não pode ser vazio.");
+      setErrorMessage("O intervalo de envio não pode ser vazio.");
       return;
     }
     const value = parseInt(valueString, 10);
     if (!isNaN(value) && value >= 1 && Number.isInteger(value)) {
       setIntervalSeconds(value);
       setErrorMessage(null);
-      if (isSwForwarding) { // Se SW estiver encaminhando, atualize sua config também
+      if (isSwForwarding) {
         sendCommandToSW('update-config', { intervalSeconds: value });
-        toast({ title: "Intervalo Atualizado", description: `Serviço de comunicação usará novo intervalo de ${value}s para envios.` });
+        toast({ title: "Intervalo Atualizado", description: `Serviço usará novo intervalo de ${value}s.` });
       }
     } else {
       setIntervalSeconds(NaN);
-      const errorMsg = "Intervalo de envio (para SW) inválido. Use um número inteiro (mínimo 1).";
+      const errorMsg = "Intervalo de envio inválido. Use um número inteiro (mínimo 1).";
       setErrorMessage(errorMsg);
       if (valueString !== '') toast({ title: "Intervalo Inválido", description: errorMsg, variant: "destructive" });
     }
@@ -360,9 +340,12 @@ const TraccarWebClient: NextPage = () => {
       if (!newUrl || newUrl.trim() === '') {
           setErrorMessage("A URL do Servidor não pode ser vazia.");
       } else if (!isValidHttpUrl(newUrl)) {
-          setErrorMessage("URL do Servidor inválida. Formato esperado: http:// ou https://");
+          setErrorMessage("URL do Servidor inválida. Formato: http:// ou https://");
       } else {
           setErrorMessage(null);
+          if (isSwForwarding) { // If SW is forwarding, update its config also
+            sendCommandToSW('update-config', { serverUrl: newUrl });
+          }
       }
   };
   
@@ -371,39 +354,36 @@ const TraccarWebClient: NextPage = () => {
     !serverUrl || serverUrl.trim() === '' || !isValidHttpUrl(serverUrl) ||
     isNaN(intervalSeconds) || intervalSeconds < 1;
 
-  // O botão de iniciar deve ser desabilitado se:
-  // - SW não estiver ativo
-  // - UI estiver ocupada (isUiDisabled)
-  // - Se não estiver rastreando (isPageTracking) E (configuração for inválida OU houver erro crítico de GPS na página)
   const criticalGpsErrorOnPage = errorMessage && 
       (errorMessage.toLowerCase().includes("geolocalização não é suportada") ||
        errorMessage.toLowerCase().includes("permissão de localização negada"));
 
   const startButtonShouldBeDisabled =
-    !isServiceWorkerActive || // SW é necessário para encaminhar
+    !isServiceWorkerActive ||
     isUiDisabled ||
     (!isPageTracking && (isConfigurationInvalid || !!criticalGpsErrorOnPage));
 
+  const isSwAttemptingSend = statusMessage.includes("Tentando enviar dados");
 
   return (
     <div className="min-h-screen bg-background flex items-center justify-center p-4 font-sans">
-      <Card className="w-full max-w-md shadow-lg rounded-xl border">
+      <Card className="w-full max-w-md shadow-xl rounded-xl border">
         <CardHeader className="p-6">
           <CardTitle className="text-2xl font-bold text-center text-foreground">Cliente Web Traccar</CardTitle>
           <CardDescription className="text-center text-muted-foreground pt-1">
-            Rastreamento GPS via página com encaminhamento por Service Worker.
+            Rastreamento GPS com encaminhamento por Service Worker.
             <br />
-            <span className="text-xs font-semibold text-destructive">O rastreamento para se a aba/navegador for fechado.</span>
+            <span className="text-xs font-semibold text-destructive">O rastreamento pode parar se a aba/navegador for fechado ou o sistema operacional restringir.</span>
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6 p-6">
-          {!isServiceWorkerActive && !errorMessage?.includes("Falha crítica ao registrar") && ( 
+          {!isServiceWorkerActive && !errorMessage?.includes("Falha crítica") && ( 
             <Alert variant="destructive">
                 <AlertCircle className="h-4 w-4" />
-                <AlertTitle>Serviço de Comunicação Indisponível</AlertTitle>
+                <AlertTitle>Serviço Indisponível</AlertTitle>
                 <AlertDescription>
                     O serviço de comunicação em segundo plano não está ativo.
-                    Seu navegador pode não suportar Service Workers, ou pode haver um erro.
+                    Seu navegador pode não suportar ou pode haver um erro.
                 </AlertDescription>
             </Alert>
           )}
@@ -416,15 +396,15 @@ const TraccarWebClient: NextPage = () => {
           )}
 
           <div className="space-y-2">
-            <Label htmlFor="deviceId" className="font-medium">Identificador do Dispositivo</Label>
+            <Label htmlFor="deviceId" className="font-medium">ID do Dispositivo</Label>
             <Input id="deviceId" placeholder="Insira um ID único" value={deviceId} onChange={(e) => setDeviceId(e.target.value)} disabled={isPageTracking || isUiDisabled} className="bg-card rounded-md shadow-sm" aria-required="true"/>
-            <p className="text-xs text-muted-foreground pt-1">ID para o servidor Traccar.</p>
+            <p className="text-xs text-muted-foreground pt-1">Identificador para o servidor Traccar.</p>
           </div>
 
           <div className="space-y-2">
             <Label htmlFor="serverUrl" className="font-medium">URL do Servidor Traccar</Label>
             <Input id="serverUrl" placeholder="Ex: http://seu.servidor.com:5055" value={serverUrl} onChange={handleServerUrlChange} disabled={isPageTracking || isUiDisabled} type="url" className={`bg-card rounded-md shadow-sm ${errorMessage?.includes('URL do Servidor inválida') ? 'border-destructive ring-destructive' : ''}`} aria-required="true"/>
-            <p className="text-xs text-muted-foreground pt-1">Protocolo OsmAnd (porta padrão 5055). Ex: <code>http://demo.traccar.org:5055</code></p>
+            <p className="text-xs text-muted-foreground pt-1">Protocolo OsmAnd (porta 5055). Ex: <code>http://demo.traccar.org:5055</code></p>
           </div>
 
           <div className="space-y-2">
@@ -447,11 +427,22 @@ const TraccarWebClient: NextPage = () => {
             </Button>
 
             <div role="status" aria-live="polite" className={`flex items-center space-x-2 py-2 px-4 rounded-full text-sm font-medium transition-colors duration-200 ${
-                errorMessage ? 'bg-destructive/10 text-destructive' : (isPageTracking ? 'bg-accent/10 text-accent' : 'bg-muted text-muted-foreground')
+                errorMessage ? 'bg-destructive/10 text-destructive' : (isPageTracking || isSwForwarding ? 'bg-accent/10 text-accent' : 'bg-muted text-muted-foreground')
             }`}>
-              { errorMessage ? <XCircle className="h-5 w-5"/> : (isPageTracking ? (isSwForwarding ? <MapPin className="h-5 w-5 animate-pulse text-green-500"/> : <MapPin className="h-5 w-5 text-yellow-500"/>) : <WifiOff className="h-5 w-5"/>) }
+              { errorMessage ? <XCircle className="h-5 w-5"/> : 
+                (isSwAttemptingSend ? <Loader2 className="h-5 w-5 animate-spin text-accent" /> : 
+                  (isPageTracking && isSwForwarding ? <MapPin className="h-5 w-5 animate-pulse text-green-500"/> : 
+                    (isPageTracking ? <MapPin className="h-5 w-5 text-yellow-500"/> : 
+                      <WifiOff className="h-5 w-5"/>
+                    )
+                  )
+                ) 
+              }
               <span className="truncate max-w-xs">{statusMessage}</span>
             </div>
+            {lastSuccessfulSendTime && !errorMessage && (isPageTracking || isSwForwarding) && (
+                <p className="text-xs text-muted-foreground">Último envio com sucesso: {lastSuccessfulSendTime}</p>
+            )}
           </div>
         </CardContent>
       </Card>
