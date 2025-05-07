@@ -94,3 +94,15 @@
     font-family: var(--font-geist-sans), system-ui, sans-serif;
   }
 }
+
+@layer utilities {
+  .animate-spin-slow {
+    animation: spin-slow 3s linear infinite;
+  }
+
+  @keyframes spin-slow {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+}
